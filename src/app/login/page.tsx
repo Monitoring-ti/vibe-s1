@@ -1,8 +1,9 @@
 "use client";
+
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ShieldCheck, Mail, Lock, Loader2, ArrowLeft } from "lucide-react";
+import { ShieldCheck, Mail, Lock, Loader2, ArrowLeft, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +18,7 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [guestLoading, setGuestLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleLogin(e: React.FormEvent) {
@@ -67,6 +69,31 @@ function LoginForm() {
     }
   }
 
+  async function handleGuestLogin() {
+    setError(null);
+    setGuestLoading(true);
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase.auth.signInAnonymously();
+
+      if (error) {
+        setError(
+          error.message === "Anonymous sign-ins are disabled"
+            ? "El acceso sin cuenta está desactivado. Actívalo en Supabase → Authentication → Providers → Anonymous."
+            : error.message,
+        );
+        setGuestLoading(false);
+        return;
+      }
+
+      router.push(redirect);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error al entrar sin cuenta");
+      setGuestLoading(false);
+    }
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface-gradient px-4">
       <div className="w-full max-w-md">
@@ -97,7 +124,7 @@ function LoginForm() {
                     onChange={(e) => setEmail(e.target.value)}
                     className="pl-10"
                     required
-                    disabled={loading}
+                    disabled={loading || guestLoading}
                   />
                 </div>
               </div>
@@ -114,7 +141,7 @@ function LoginForm() {
                     onChange={(e) => setPassword(e.target.value)}
                     className="pl-10"
                     required
-                    disabled={loading}
+                    disabled={loading || guestLoading}
                   />
                 </div>
               </div>
@@ -125,7 +152,7 @@ function LoginForm() {
                 </div>
               )}
 
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full" disabled={loading || guestLoading}>
                 {loading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -148,7 +175,7 @@ function LoginForm() {
             <button
               type="button"
               onClick={handleGoogleLogin}
-              disabled={loading}
+              disabled={loading || guestLoading}
               className="flex w-full items-center justify-center gap-3 rounded-md border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -172,8 +199,23 @@ function LoginForm() {
               Continuar con Google
             </button>
 
+            {/* Acceso sin cuenta */}
+            <button
+              type="button"
+              onClick={handleGuestLogin}
+              disabled={loading || guestLoading}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-outline-variant px-4 py-2.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              {guestLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <UserRound className="h-4 w-4" />
+              )}
+              Entrar sin cuenta (invitado)
+            </button>
+
             {searchParams.get("error") === "oauth" && (
-              <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+              <div className="mt-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
                 <p>No se pudo completar el ingreso con Google.</p>
                 <p className="mt-1 text-xs opacity-80">
                   Motivo: {searchParams.get("reason") || "desconocido"}
