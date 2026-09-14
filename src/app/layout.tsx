@@ -28,6 +28,9 @@ export default function RootLayout({
   return (
     <html lang="es" suppressHydrationWarning>
       <head>
+        <link rel="icon" href="/favicon.png" type="image/png" />
+        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <meta name="theme-color" content="#FF5722" />
         {/* Material Symbols Outlined */}
         <link
           rel="stylesheet"

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import Image from "next/image";
 
 // ──────────────────────────────────────────────
 // Nav items
@@ -29,11 +30,13 @@ export function DashboardSidebar() {
     <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-outline-variant bg-surface-container-lowest">
       {/* Brand */}
       <div className="flex items-center gap-3 px-5 py-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-vibe-gradient">
-          <span className="ms text-2xl text-white" style={{ color: "#fff" }}>
-            shield
-          </span>
-        </div>
+        <Image
+          src="/vibe-icon.png"
+          alt=""
+          width={40}
+          height={40}
+          className="rounded-lg"
+        />
         <div className="flex flex-col">
           <span className="font-headline-sm text-on-surface leading-tight">
             VIBE Safety AI

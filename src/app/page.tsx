@@ -1,18 +1,19 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export default function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-surface-gradient px-6">
       {/* Logo */}
-      <div className="mb-8 flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-hero-gradient shadow-elevation-2">
-          <span className="material-symbols-outlined fill text-white" style={{ fontSize: 26 }}>
-            shield
-          </span>
-        </div>
-        <span className="font-heading text-2xl font-bold text-on-surface">
-          VIBE Safety AI
-        </span>
+      <div className="mb-8">
+        <Image
+          src="/vibe-logo.png"
+          alt="VIBE Safety AI"
+          width={220}
+          height={143}
+          priority
+          className="drop-shadow-sm"
+        />
       </div>
 
       {/* Título y descripción breve */}
