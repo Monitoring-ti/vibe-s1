@@ -173,8 +173,12 @@ function LoginForm() {
             </button>
 
             {searchParams.get("error") === "oauth" && (
-              <div className="mt-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                No se pudo completar el ingreso con Google. Intenta de nuevo.
+              <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <p>No se pudo completar el ingreso con Google.</p>
+                <p className="mt-1 text-xs opacity-80">
+                  Motivo: {searchParams.get("reason") || "desconocido"}
+                  {searchParams.get("desc") ? ` — ${searchParams.get("desc")}` : ""}
+                </p>
               </div>
             )}
 
