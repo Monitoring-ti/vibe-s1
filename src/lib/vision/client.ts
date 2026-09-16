@@ -78,7 +78,7 @@ export async function extractWithVision(
   for (const page of pages) {
     content.push({
       type: "image_url",
-      image_url: { url: `data:image/png;base64,${page.base64}`, detail: "high" },
+      image_url: { url: `data:image/jpeg;base64,${page.base64}`, detail: "high" },
     });
   }
 
