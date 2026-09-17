@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Upload, FileText, AlertCircle, Sparkles, X, Loader2,
-  CheckCircle, Eye, ChevronLeft, ChevronRight, FileCheck,
+  Upload, FileText, AlertCircle, X, Loader2,
+  CheckCircle, Eye, ChevronLeft, ChevronRight, FileCheck, Workflow,
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { getPdfPageCount } from "@/lib/pdf/render";
@@ -12,23 +12,37 @@ import { getPdfPageCount } from "@/lib/pdf/render";
 interface UploadItem {
   file: File;
   id: string;
-  status: "pending" | "rendering" | "analyzing" | "done" | "error";
+  status: "pending" | "uploading" | "processing" | "done" | "error";
   error?: string;
   pageCount?: number;
   previewUrl: string;
+  jobId?: string;
 }
+
+interface JobStatus {
+  estado: string;
+  error_mensaje: string | null;
+  talks: number;
+  docs: number;
+}
+
+const MAX_POLL_MS = 5 * 60 * 1000; // 5 minutos máx de polling
 
 export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [globalError, setGlobalError] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  // Ventana de confirmación: PDF a previsualizar
   const [confirmItem, setConfirmItem] = useState<UploadItem | null>(null);
   const [confirmPage, setConfirmPage] = useState(1);
+  const pollTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const router = useRouter();
 
-  // Precargar nº de páginas de cada archivo al agregarlo
+  // Limpieza de timers al desmontar
+  useEffect(() => {
+    const timers = pollTimers.current;
+    return () => timers.forEach(clearTimeout);
+  }, []);
+
   useEffect(() => {
     for (const item of items) {
       if (item.pageCount === undefined) {
@@ -86,57 +100,103 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
     setConfirmPage(1);
   };
 
-  const confirmAndProcess = () => {
-    if (!confirmItem) return;
-    // Cerrar ventana y lanzar el proceso para este archivo
-    const target = confirmItem;
-    setConfirmItem(null);
-    processOne(target);
+  const startPolling = (uploadItem: UploadItem, jobId: string) => {
+    const startedAt = Date.now();
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/job-status?id=${jobId}`);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || "Error de estado");
+
+        const estado = data.job.estado as string;
+
+        if (estado === "completado" || estado === "requiere_revision") {
+          setItems((prev) =>
+            prev.map((i) => (i.id === uploadItem.id ? { ...i, status: "done" } : i)),
+          );
+          router.push("/dashboard/resultados");
+          return;
+        }
+
+        if (estado === "error") {
+          setItems((prev) =>
+            prev.map((i) =>
+              i.id === uploadItem.id
+                ? { ...i, status: "error", error: data.job.error_mensaje || "Error en n8n" }
+                : i,
+            ),
+          );
+          return;
+        }
+
+        // Sigue procesando
+        if (Date.now() - startedAt > MAX_POLL_MS) {
+          setItems((prev) =>
+            prev.map((i) =>
+              i.id === uploadItem.id
+                ? { ...i, status: "error", error: "Timeout: n8n tardó más de 5 minutos" }
+                : i,
+            ),
+          );
+          return;
+        }
+
+        const timer = setTimeout(poll, 3000);
+        pollTimers.current.push(timer);
+      } catch {
+        const timer = setTimeout(poll, 5000);
+        pollTimers.current.push(timer);
+      }
+    };
+
+    poll();
   };
 
-  const processOne = async (item: UploadItem) => {
-    setIsProcessing(true);
-    setGlobalError(null);
-    let ok = false;
+  const confirmAndProcess = () => {
+    if (!confirmItem) return;
+    const target = confirmItem;
+    setConfirmItem(null);
+    submitToN8n(target);
+  };
+
+  const submitToN8n = async (item: UploadItem) => {
+    setItems((prev) =>
+      prev.map((i) => (i.id === item.id ? { ...i, status: "uploading" } : i)),
+    );
 
     try {
-      setItems((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: "rendering" } : i)),
-      );
+      const formData = new FormData();
+      formData.append("file", item.file);
 
-      const { renderPdfToImages } = await import("@/lib/pdf/render");
-      const pages = await renderPdfToImages(item.file);
-
-      setItems((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: "analyzing" } : i)),
-      );
-
-      const res = await fetch("/api/analyze", {
+      const res = await fetch("/api/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: item.file.name,
-          pages: pages.map((p) => ({ pageNumber: p.pageNumber, base64: p.base64 })),
-        }),
+        body: formData,
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Error del análisis");
+
+      if (!res.ok) throw new Error(data.error || "Error al enviar");
 
       setItems((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: "done" } : i)),
+        prev.map((i) =>
+          i.id === item.id ? { ...i, status: "processing", jobId: data.jobId } : i,
+        ),
       );
-      ok = true;
+
+      startPolling(item, data.jobId);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Error desconocido";
+      const msg = err instanceof Error ? err.message : "Error de red";
       setItems((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: "error", error: msg } : i)),
+        prev.map((i) =>
+          i.id === item.id ? { ...i, status: "error", error: msg } : i,
+        ),
       );
-    } finally {
-      setIsProcessing(false);
-      if (ok) router.push("/dashboard/resultados");
     }
   };
+
+  const isBusy = (s: UploadItem["status"]) => s === "uploading" || s === "processing";
 
   return (
     <div className="w-full space-y-4">
@@ -167,7 +227,6 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
             addFiles(Array.from(e.target.files || []));
             e.target.value = "";
           }}
-          disabled={isProcessing}
         />
         <div
           className={cn(
@@ -181,7 +240,7 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
           {isDragging ? "Suelta los PDFs aquí" : "Arrastra tus actas o haz clic"}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          PDF hasta {maxSizeMB} MB · máx. {maxFiles} archivos · verifica antes de procesar
+          PDF hasta {maxSizeMB} MB · máx. {maxFiles} archivos · procesa vía n8n
         </p>
       </div>
 
@@ -202,13 +261,14 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                 "flex items-center justify-between rounded-xl border p-3",
                 item.status === "error" && "border-destructive/30 bg-destructive/5",
                 item.status === "done" && "border-tertiary/30 bg-tertiary/5",
-                (item.status === "pending" || item.status === "rendering" || item.status === "analyzing") &&
+                !isBusy(item.status) && item.status !== "error" && item.status !== "done" &&
                   "border-outline-variant bg-surface-container-lowest",
+                isBusy(item.status) && "border-primary/30 bg-primary/5",
               )}
             >
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-container">
-                  {item.status === "rendering" || item.status === "analyzing" ? (
+                  {isBusy(item.status) ? (
                     <Loader2 className="h-4 w-4 animate-spin text-primary" />
                   ) : item.status === "done" ? (
                     <CheckCircle className="h-4 w-4 text-tertiary" />
@@ -225,8 +285,8 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                   <p className="text-xs text-muted-foreground">
                     {formatBytes(item.file.size)}
                     {item.pageCount !== undefined && item.pageCount > 0 && ` · ${item.pageCount} pág.`}
-                    {item.status === "rendering" && " · Renderizando páginas..."}
-                    {item.status === "analyzing" && " · Analizando con IA..."}
+                    {item.status === "uploading" && " · Enviando a n8n..."}
+                    {item.status === "processing" && " · Procesando en n8n (extracción IA)..."}
                     {item.status === "done" && " · Completado"}
                     {item.status === "error" && ` · ${item.error}`}
                   </p>
@@ -234,30 +294,29 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 {item.status === "pending" && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); openPreview(item); }}
-                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
-                    title="Ver y confirmar"
-                  >
-                    <Eye className="h-4 w-4" />
-                    Verificar
-                  </button>
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openPreview(item); }}
+                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                    >
+                      <Eye className="h-4 w-4" />
+                      Verificar
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
+                      className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </>
                 )}
-                <button
-                  onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
-                  disabled={isProcessing}
-                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-                  title="Quitar"
-                >
-                  <X className="h-4 w-4" />
-                </button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* ════ Ventana modal: verificación del PDF antes de procesar ════ */}
+      {/* ════ Modal de verificación ════ */}
       {confirmItem && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
@@ -267,7 +326,6 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
             className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-outline-variant bg-surface-container-lowest shadow-elevation-3"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
             <div className="flex items-center justify-between border-b border-outline-variant px-5 py-4">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -287,13 +345,12 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
               </div>
               <button
                 onClick={() => setConfirmItem(null)}
-                className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-surface-container-high"
+                className="rounded-full p-2 text-on-surface-variant hover:bg-surface-container-high"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            {/* Visor */}
             <div className="flex-1 overflow-auto bg-surface-container-low p-4">
               <iframe
                 src={`${confirmItem.previewUrl}#page=${confirmPage}&toolbar=0&navpanes=0&view=FitH`}
@@ -302,7 +359,6 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
               />
             </div>
 
-            {/* Footer: acciones */}
             <div className="flex items-center justify-between gap-3 border-t border-outline-variant px-5 py-4">
               <div className="flex items-center gap-2">
                 <button
@@ -336,7 +392,7 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setConfirmItem(null)}
-                  className="rounded-full border border-outline-variant px-5 py-2.5 font-label-lg text-on-surface transition-colors hover:bg-surface-container-high"
+                  className="rounded-full border border-outline-variant px-5 py-2.5 font-label-lg text-on-surface hover:bg-surface-container-high"
                 >
                   Cancelar
                 </button>
@@ -344,8 +400,8 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                   onClick={confirmAndProcess}
                   className="flex items-center gap-2 rounded-full bg-hero-gradient px-5 py-2.5 font-label-lg font-semibold text-white shadow-elevation-2 transition-transform hover:scale-[1.02]"
                 >
-                  <Sparkles className="h-4 w-4" />
-                  Es correcto, analizar
+                  <Workflow className="h-4 w-4" />
+                  Confirmar y procesar
                 </button>
               </div>
             </div>
