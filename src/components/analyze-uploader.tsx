@@ -102,6 +102,8 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
 
   const startPolling = (uploadItem: UploadItem, jobId: string) => {
     const startedAt = Date.now();
+    // Espera inicial de 30s: n8n necesita tiempo para recibir y arrancar
+    const FIRST_POLL_DELAY = 30_000;
 
     const poll = async () => {
       try {
@@ -151,7 +153,12 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
       }
     };
 
-    poll();
+    const firstTimer = setTimeout(poll, FIRST_POLL_DELAY);
+    pollTimers.current.push(firstTimer);
+  };
+
+  const confirmAndProcessDirect = (item: UploadItem) => {
+    submitToN8n(item);
   };
 
   const confirmAndProcess = () => {
@@ -194,6 +201,126 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
         ),
       );
     }
+  };
+
+  /**
+   * Envía TODOS los PDFs pendientes en UNA sola llamada multipart a /api/submit-all.
+   * Marca cada item como uploading; el estado individual lo actualiza el polling.
+   */
+  const sendAllToN8n = async () => {
+    const pending = items.filter((i) => i.status === "pending");
+    if (pending.length === 0) return;
+
+    setGlobalError(null);
+
+    // marcar todos como uploading
+    setItems((prev) =>
+      prev.map((i) =>
+        pending.some((p) => p.id === i.id) ? { ...i, status: "uploading" as const } : i,
+      ),
+    );
+
+    try {
+      const formData = new FormData();
+      for (const p of pending) {
+        formData.append("files", p.file, p.file.name);
+      }
+
+      const res = await fetch("/api/submit-all", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error al enviar a n8n");
+
+      // La API devuelve jobs[] con {uploadId, jobId} en el mismo orden que files[]
+      const jobs: Array<{ uploadId: string; jobId: string }> = data.jobs ?? [];
+
+      setItems((prev) =>
+        prev.map((i) => {
+          const match = jobs.find((j) => j.uploadId === i.id);
+          return match
+            ? { ...i, status: "processing" as const, jobId: match.jobId }
+            : i;
+        }),
+      );
+
+      // Polling compartido: esperamos a que TODOS los jobs terminen
+      const jobIds = jobs.map((j) => j.jobId);
+      startPollingAll(pending, jobIds);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Error de red";
+      setItems((prev) =>
+        prev.map((i) =>
+          pending.some((p) => p.id === i.id)
+            ? { ...i, status: "error" as const, error: msg }
+            : i,
+        ),
+      );
+    }
+  };
+
+  const startPollingAll = (pending: UploadItem[], jobIds: string[]) => {
+    const startedAt = Date.now();
+    const FIRST_POLL_DELAY = 30_000; // 30s de gracia para n8n
+
+    const poll = async () => {
+      try {
+        const results = await Promise.all(
+          jobIds.map(async (id) => {
+            const r = await fetch(`/api/job-status?id=${id}`);
+            const d = await r.json();
+            return { id, estado: d.job?.estado as string, error: d.job?.error_mensaje };
+          }),
+        );
+
+        const allDone = results.every(
+          (r) => r.estado === "completado" || r.estado === "requiere_revision",
+        );
+        const anyError = results.find((r) => r.estado === "error");
+
+        if (allDone) {
+          setItems((prev) =>
+            prev.map((i) =>
+              pending.some((p) => p.id === i.id) ? { ...i, status: "done" as const } : i,
+            ),
+          );
+          router.push("/dashboard/resultados");
+          return;
+        }
+
+        if (anyError) {
+          setItems((prev) =>
+            prev.map((i) =>
+              pending.some((p) => p.id === i.id)
+                ? { ...i, status: "error" as const, error: anyError.error || "Error en n8n" }
+                : i,
+            ),
+          );
+          return;
+        }
+
+        if (Date.now() - startedAt > MAX_POLL_MS) {
+          setItems((prev) =>
+            prev.map((i) =>
+              pending.some((p) => p.id === i.id)
+                ? { ...i, status: "error" as const, error: "Timeout esperando a n8n" }
+                : i,
+            ),
+          );
+          return;
+        }
+
+        const t = setTimeout(poll, 5000);
+        pollTimers.current.push(t);
+      } catch {
+        const t = setTimeout(poll, 7000);
+        pollTimers.current.push(t);
+      }
+    };
+
+    const first = setTimeout(poll, FIRST_POLL_DELAY);
+    pollTimers.current.push(first);
   };
 
   const isBusy = (s: UploadItem["status"]) => s === "uploading" || s === "processing";
@@ -251,7 +378,7 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
         </div>
       )}
 
-      {/* Lista */}
+      {/* Lista simple */}
       {items.length > 0 && (
         <div className="space-y-2">
           {items.map((item) => (
@@ -261,9 +388,8 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                 "flex items-center justify-between rounded-xl border p-3",
                 item.status === "error" && "border-destructive/30 bg-destructive/5",
                 item.status === "done" && "border-tertiary/30 bg-tertiary/5",
-                !isBusy(item.status) && item.status !== "error" && item.status !== "done" &&
-                  "border-outline-variant bg-surface-container-lowest",
                 isBusy(item.status) && "border-primary/30 bg-primary/5",
+                item.status === "pending" && "border-outline-variant bg-surface-container-lowest",
               )}
             >
               <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -284,35 +410,38 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {formatBytes(item.file.size)}
-                    {item.pageCount !== undefined && item.pageCount > 0 && ` · ${item.pageCount} pág.`}
                     {item.status === "uploading" && " · Enviando a n8n..."}
-                    {item.status === "processing" && " · Procesando en n8n (extracción IA)..."}
+                    {item.status === "processing" && " · En proceso en n8n — espera ~30s"}
                     {item.status === "done" && " · Completado"}
                     {item.status === "error" && ` · ${item.error}`}
                   </p>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                {item.status === "pending" && (
-                  <>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openPreview(item); }}
-                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
-                    >
-                      <Eye className="h-4 w-4" />
-                      Verificar
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
-                      className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </>
-                )}
-              </div>
+              {item.status === "pending" && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
+                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
           ))}
+
+          {/* BOTÓN ÚNICO: envía todos los PDFs pendientes en una sola llamada */}
+          {items.some((i) => i.status === "pending") && (
+            <button
+              onClick={sendAllToN8n}
+              disabled={items.some((i) => isBusy(i.status))}
+              className="w-full rounded-xl bg-hero-gradient py-3.5 text-base font-semibold text-white shadow-elevation-2 transition-transform hover:scale-[1.01] disabled:opacity-50"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Workflow className="h-5 w-5" />
+                Enviar {items.filter((i) => i.status === "pending").length} documento
+                {items.filter((i) => i.status === "pending").length !== 1 ? "s" : ""} a n8n
+              </span>
+            </button>
+          )}
         </div>
       )}
 

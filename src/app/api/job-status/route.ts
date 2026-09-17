@@ -4,14 +4,12 @@
  * Devuelve estado del job, documento y conteo de charlas detectadas.
  */
 import { createClient } from "@/lib/supabase/server";
+import { getUserOrDev } from "@/lib/supabase/dev";
 import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
   try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { supabase, user } = await getUserOrDev();
 
     if (!user) {
       return NextResponse.json({ error: "No autenticado" }, { status: 401 });

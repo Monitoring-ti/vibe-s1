@@ -4,17 +4,15 @@
  * y devuelve jobId para que la web haga polling.
  */
 import { createClient } from "@/lib/supabase/server";
+import { getUserOrDev } from "@/lib/supabase/dev";
 import { NextResponse } from "next/server";
 
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "";
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "https://n8n.srv1748637.hstgr.cloud/webhook-test/c3b54348-be7f-4b4a-a419-60ccadd7f441";
 const N8N_WEBHOOK_SECRET = process.env.N8N_WEBHOOK_SECRET || "";
 
 export async function POST(request: Request) {
   try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { supabase, user } = await getUserOrDev();
 
     if (!user) {
       return NextResponse.json({ error: "No autenticado" }, { status: 401 });
@@ -108,34 +106,32 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Error al registrar documento" }, { status: 500 });
     }
 
-    // 5. Disparar webhook n8n (no bloqueante para la respuesta, pero esperamos
-    //    confirmación de recepción con timeout corto)
-    const webhookPayload = {
-      job_id: job.id,
-      document_id: doc.id,
-      file_name: file.name,
-      file_size: file.size,
-      pdf_url: signed.signedUrl,
-      storage_path: storagePath,
-      bucket,
-      callback: {
-        supabase_url: process.env.NEXT_PUBLIC_SUPABASE_URL,
-      },
-    };
+    // 5. Disparar webhook n8n — envía el ARCHIVO como multipart/form-data
+    //    (n8n lo recibe como binario en el nodo Webhook, con mimetype)
+    const forwardForm = new FormData();
+    forwardForm.append("file", file, file.name);
+    forwardForm.append("job_id", job.id);
+    forwardForm.append("document_id", doc.id);
+    forwardForm.append("file_name", file.name);
+    forwardForm.append("mime_type", file.type || "application/pdf");
+    forwardForm.append("file_size", String(file.size));
+    forwardForm.append("storage_path", storagePath);
+    forwardForm.append("bucket", bucket);
+    forwardForm.append("pdf_url", signed.signedUrl);
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
+      const timeout = setTimeout(() => controller.abort(), 15000);
 
       const webhookRes = await fetch(N8N_WEBHOOK_URL, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          // Content-Type multipart lo establece FormData automáticamente
           ...(N8N_WEBHOOK_SECRET
             ? { "X-Webhook-Secret": N8N_WEBHOOK_SECRET }
             : {}),
         },
-        body: JSON.stringify(webhookPayload),
+        body: forwardForm,
         signal: controller.signal,
       });
       clearTimeout(timeout);

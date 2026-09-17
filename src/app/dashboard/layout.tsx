@@ -14,13 +14,15 @@ export default async function DashboardLayout({
   } = await supabase.auth.getUser();
 
   // Protección a nivel de layout (además del middleware)
-  if (!user) {
+  // BYPASS LOCAL: en desarrollo sin sesión, permitir acceso (probar flujo)
+  const isDev = process.env.NODE_ENV === "development";
+  if (!user && !isDev) {
     redirect("/login");
   }
 
-  const userEmail = user.email ?? "";
+  const userEmail = user?.email ?? "dev@local";
   const userName =
-    user.user_metadata?.full_name ?? user.email?.split("@")[0] ?? "Usuario";
+    user?.user_metadata?.full_name ?? user?.email?.split("@")[0] ?? "Invitado";
 
   return (
     <div className="flex min-h-screen bg-surface-container-low">

@@ -35,12 +35,15 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   // Rutas protegidas: requieren sesión válida
-  const protectedPaths = ["/dashboard", "/api/analyze"];
+  // BYPASS LOCAL: en desarrollo no exigir login (probar flujo sin sesión)
+  const protectedPaths = ["/dashboard", "/api/analyze", "/api/submit", "/api/job-status"];
   const isProtected = protectedPaths.some((p) =>
     request.nextUrl.pathname.startsWith(p),
   );
+  const isLocalhost = request.nextUrl.hostname === "localhost" ||
+    request.nextUrl.hostname === "127.0.0.1";
 
-  if (!user && isProtected) {
+  if (!user && isProtected && !isLocalhost) {
     // Las rutas API responden 401 JSON; las páginas redirigen a /login
     if (request.nextUrl.pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "No autenticado" }, { status: 401 });
