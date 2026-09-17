@@ -410,8 +410,8 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {formatBytes(item.file.size)}
-                    {item.status === "uploading" && " · Enviando a n8n..."}
-                    {item.status === "processing" && " · En proceso en n8n — espera ~30s"}
+                    {item.status === "uploading" && " · Subido — enviando a n8n..."}
+                    {item.status === "processing" && " · Recibido por n8n — en proceso, espera ~30s"}
                     {item.status === "done" && " · Completado"}
                     {item.status === "error" && ` · ${item.error}`}
                   </p>
@@ -427,6 +427,14 @@ export function AnalyzeUploader({ maxSizeMB = 20, maxFiles = 5 }) {
               )}
             </div>
           ))}
+
+          {/* Aviso de espera mientras n8n procesa */}
+          {items.some((i) => i.status === "processing") && (
+            <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-primary">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Documentos recibidos por n8n. Procesando con IA — aviso al terminar (~30s).
+            </div>
+          )}
 
           {/* BOTÓN ÚNICO: envía todos los PDFs pendientes en una sola llamada */}
           {items.some((i) => i.status === "pending") && (
